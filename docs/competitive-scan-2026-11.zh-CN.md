@@ -395,3 +395,12 @@ OpenCode v2 的标题请求特征很明确：没有 tools、最多 3 条消息�
 - `1d1aade feat(stream): keep SSE responses alive while upstream is idle`
 - `a4b641c test(protocol): cover SSE keepalive timing and event boundaries`
 - 上游刻意维护 test-free released tree；本 fork 保留这一个聚焦测试以锁定时序与边界。若要与上游策略完全一致，可单独 revert `a4b641c`，不影响生产代码。
+
+**发布构建与生产部署**
+
+- 按上游 `release.yml` 的参数重建：`go build -trimpath -ldflags="-s -w -X main.version=v1.4.7+keepalive.1"`，Linux amd64 产物 14,110,880 字节，SHA256 `3B8FB6846047FA025A81CE3B796950394538CA83523B08C77FBAE26D257900FC`。
+- VPS 冒烟使用 18080 临时实例与独立配置：`/healthz` 200、`/v1/models` 200、错误 Key 401；测试后端口释放，生产 8080 未受影响。
+- 2026-11-10 15:59 CST 部署：备份原二进制为 `/opt/opencode2api/opencode2api.bak-20261110-155906`，原子替换后重启；健康检查 200，版本 `v1.4.7+keepalive.1`，WARP 2 个出口活跃，目录刷新后 `status=ok`。
+- 生产鉴权复核：带 `server_keys` 请求 `/v1/models` 200，无 Key 401；公网 `https://oc.fxk.us.ci/healthz` 200。
+- 已推送 `main`：功能提交与本文档记录均已同步到 `origin/main`。
+- 自动更新风险：`.installed_version` 仍为 `v1.4.7`，`stack-update.timer` 在远端同版本时跳过；上游发布 `v1.4.8` 后会覆盖本自定义二进制。如需长期保留保活改动，应改为从本 fork 发布或调整更新源。
