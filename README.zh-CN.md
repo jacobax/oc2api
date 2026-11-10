@@ -396,6 +396,9 @@ pool+http://127.0.0.1:7891
 | `performance.max_idle_conns_per_host`   | `256`  | 每个 Transport 对单个主机的空闲连接上限。        |
 | `performance.max_conns_per_host`        | `0`    | 单个主机的连接上限；0 表示不限制。               |
 | `performance.idle_conn_timeout_seconds` | `120`  | 空闲连接保留时间。                               |
+| `performance.stream_keepalive_seconds`  | `15`   | 空闲时 SSE 保活间隔；0 表示关闭。                |
+
+SSE 响应打开期间，空闲达到该秒数后会写入一条 `: keepalive` 注释，且只在完整事件之间写入，不会截断 `data:` 行。这样上游仍在推理时，中间层和客户端不会因长时间无数据而断开连接。
 
 单次响应头超时不会超过请求总超时。希望慢节点仍能留出回退时间时，可以将它设为小于总超时的值。请求上下文过期后会停止后续尝试，不会惩罚尚未实际使用的 Key 或代理。
 

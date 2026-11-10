@@ -402,6 +402,9 @@ Use it when the endpoint behind the URL already performs the rotation and the po
 | `performance.max_idle_conns_per_host`   | `256`   | Idle connection limit per host and transport.          |
 | `performance.max_conns_per_host`        | `0`     | Connection limit per host; 0 is unlimited.             |
 | `performance.idle_conn_timeout_seconds` | `120`   | Idle connection lifetime.                              |
+| `performance.stream_keepalive_seconds`  | `15`    | Idle SSE keep-alive interval; 0 disables.              |
+
+While an SSE response is open, a `: keepalive` comment is written after this many idle seconds, but only between complete events, so `data:` lines are never split. This keeps intermediaries and clients from dropping a stream while the upstream is still thinking.
 
 The per-attempt header timeout is capped by the request timeout. Set it below the total timeout if a slow upstream should leave time for fallback. Expired request contexts stop further attempts without penalizing unused keys or proxies.
 

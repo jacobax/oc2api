@@ -424,6 +424,7 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			w.Header().Set("X-Accel-Buffering", "no")
 			w.WriteHeader(resp.StatusCode)
 			streamBody := wire.RenameStreamReader(resp.Body, upstreamRoute.Protocol, toolRenames)
+			streamBody = wire.NewKeepAliveReader(r.Context(), streamBody, time.Duration(g.cfg.Performance.StreamKeepaliveSeconds)*time.Second)
 			var usage wire.Usage
 			var usageReported bool
 			if external == upstreamRoute.Protocol {
