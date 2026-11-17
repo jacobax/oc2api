@@ -516,8 +516,26 @@ func transportPool(proxies []string, cfg config.PerformanceConfig, responseHeade
 			if err != nil {
 				return nil, fmt.Errorf("parse proxy %s: %w", config.RedactURL(raw), err)
 			}
-			transport.Proxy = http.ProxyURL(u)
 			proxyURL = u
+			if u.Scheme == "https" && u.Query().Get("tls_insecure") == "1" {
+				// The proxy's own certificate cannot be verified against its
+				// bare IP (a self-signed cert without an IP SAN, common on
+				// residential https relays). Dial the proxy leg here and hand
+				// net/http an already-tunneled connection: it then never sees
+				// the proxy as a TLS peer, and TLS to the upstream keeps full
+				// verification. The Bun transport reads the same
+				// tls_insecure=1 from the URL for its own proxy leg.
+				dialer := &net.Dialer{
+					Timeout:   time.Duration(cfg.ConnectTimeoutSeconds) * time.Second,
+					KeepAlive: 30 * time.Second,
+				}
+				transport.Proxy = nil
+				transport.DialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
+					return httpx.ProxyTunnelDial(ctx, dialer, u, address)
+				}
+			} else {
+				transport.Proxy = http.ProxyURL(u)
+			}
 		}
 		bun, err := httpx.NewBunTransport(httpx.BunOptions{
 			Proxy:                 proxyURL,

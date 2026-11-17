@@ -121,33 +121,69 @@ func (t *BunTransport) dial(ctx context.Context, scheme, addr, serverName string
 }
 
 // dialProxy opens a tunnel to addr through the transport's proxy: an HTTP
-// CONNECT for http and https proxies (the latter over standard TLS, which
-// only the proxy sees), or a SOCKS5 CONNECT. Like net/http it lets a socks5
-// proxy resolve host names too, so socks5 and socks5h behave the same.
+// CONNECT for http and https proxies (the latter over TLS, which only the
+// proxy sees), or a SOCKS5 CONNECT. Like net/http it lets a socks5 proxy
+// resolve host names too, so socks5 and socks5h behave the same.
 func (t *BunTransport) dialProxy(ctx context.Context, addr string) (net.Conn, error) {
-	op := "proxyconnect"
-	socks := t.proxy.Scheme == "socks5" || t.proxy.Scheme == "socks5h"
-	if socks {
-		op = "socks connect"
+	if t.proxy.Scheme == "socks5" || t.proxy.Scheme == "socks5h" {
+		conn, err := t.dialer.DialContext(ctx, "tcp", proxyAddr(t.proxy))
+		if err != nil {
+			return nil, &net.OpError{Op: "socks connect", Net: "tcp", Err: err}
+		}
+		stop := context.AfterFunc(ctx, func() { conn.Close() })
+		_ = conn.SetDeadline(time.Now().Add(bunHandshakeTimeout))
+		err = socks5Connect(conn, t.proxy.User, addr)
+		if !stop() && err == nil {
+			err = ctx.Err()
+		}
+		if err == nil {
+			err = conn.SetDeadline(time.Time{})
+		}
+		if err != nil {
+			conn.Close()
+			return nil, &net.OpError{Op: "socks connect", Net: "tcp", Err: err}
+		}
+		return conn, nil
 	}
-	conn, err := t.dialer.DialContext(ctx, "tcp", proxyAddr(t.proxy))
+	return ProxyTunnelDial(ctx, t.dialer, t.proxy, addr)
+}
+
+// ProxyTunnelDial opens a CONNECT tunnel to target through an http or https
+// proxy and returns the raw tunneled connection; TLS to the target stays the
+// caller's responsibility and keeps full verification.
+//
+// The proxy leg's own TLS is verified against the proxy URL's host unless the
+// URL carries tls_insecure=1. That flag exists for a bare-IP https proxy whose
+// certificate is self-signed without an IP SAN (as residential Windows relays
+// commonly ship): strict verification refuses it outright, and the gateway has
+// no other way to use it. Relaxing the flag only widens who can sit on the
+// proxy leg — the tunnel content and the upstream TLS are unaffected — so it
+// is opt-in per proxy entry instead of a global switch.
+//
+// Errors come back as *net.OpError with Op "proxyconnect", the shape net/http
+// uses for its own proxy dials, so callers classify proxy failures of both
+// transports alike.
+func ProxyTunnelDial(ctx context.Context, dialer *net.Dialer, proxy *url.URL, target string) (net.Conn, error) {
+	wrap := func(err error) (net.Conn, error) {
+		return nil, &net.OpError{Op: "proxyconnect", Net: "tcp", Err: err}
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", proxyAddr(proxy))
 	if err != nil {
-		return nil, &net.OpError{Op: op, Net: "tcp", Err: err}
+		return wrap(err)
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	_ = conn.SetDeadline(time.Now().Add(bunHandshakeTimeout))
-	if t.proxy.Scheme == "https" {
-		tlsConn := tls.Client(conn, &tls.Config{ServerName: t.proxy.Hostname()})
+	if proxy.Scheme == "https" {
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName:         proxy.Hostname(),
+			InsecureSkipVerify: proxy.Query().Get("tls_insecure") == "1",
+		})
 		if err = tlsConn.HandshakeContext(ctx); err == nil {
 			conn = tlsConn
 		}
 	}
 	if err == nil {
-		if socks {
-			err = socks5Connect(conn, t.proxy.User, addr)
-		} else {
-			conn, err = httpConnect(conn, t.proxy.User, addr)
-		}
+		conn, err = httpConnect(conn, proxy.User, target)
 	}
 	if !stop() && err == nil {
 		err = ctx.Err()
@@ -157,7 +193,7 @@ func (t *BunTransport) dialProxy(ctx context.Context, addr string) (net.Conn, er
 	}
 	if err != nil {
 		conn.Close()
-		return nil, &net.OpError{Op: op, Net: "tcp", Err: err}
+		return wrap(err)
 	}
 	return conn, nil
 }
