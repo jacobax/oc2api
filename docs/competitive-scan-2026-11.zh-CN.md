@@ -404,3 +404,28 @@ OpenCode v2 的标题请求特征很明确：没有 tools、最多 3 条消息�
 - 生产鉴权复核：带 `server_keys` 请求 `/v1/models` 200，无 Key 401；公网 `https://oc.fxk.us.ci/healthz` 200。
 - 已推送 `main`：功能提交与本文档记录均已同步到 `origin/main`。
 - 自动更新风险：`.installed_version` 仍为 `v1.4.7`，`stack-update.timer` 在远端同版本时跳过；上游发布 `v1.4.8` 后会覆盖本自定义二进制。如需长期保留保活改动，应改为从本 fork 发布或调整更新源。
+
+## 17. 第二轮：上游 v1.4.8 同步与 UA 对齐（2026-11-17）
+
+**上游同步**：合并 `jasonxu114514/opencode2api` 的 4 个新提交（tag `v1.4.8`）：
+
+- `14faec7` 加固免费层重试：修复重试链上的响应体泄漏（`bufferRetryResponse`/`replaceRetryResponse`），title 请求先分类再塑形，新增 opt-in `upstream.prompt_environment`。
+- `95575c5` 客户端工具改名迁入普通命名空间（`mcp_` 前缀，原 `clint_` 摘要命名过于显眼）。
+- `159d7fd` Go 订阅浏览器设备 OAuth 登录（`internal/goauth`，可选功能）。
+- `0d05fe9` 管理端批量代理管理 + 可选匿名访问。
+
+合并无冲突；`go vet` / `go build` / `go test ./... -count=1` 全部通过。
+
+**竞品扫描（第二轮）**：
+
+- magpie `zen-free`（`magpie-community/plugins`）：最有价值的发现是它对免费层行为门的逐条记录与"UA 保持当前"策略——2026-10-26 起 Zen 免费层对旧版 User-Agent 回答 `429 FreeUsageLimitError`，其 0.1.6–0.1.15 因此全灭；0.1.19 起按官方 2.2.5 二进制逐 header 捕获，含 `b3`/`traceparent` 追踪头，并通过 `opencode.ai/update/api/latest/cli/npm` 保持版本最新。其余要点（env 块门、协议族路径、工具名拒绝清单、project id 形状）本项目均已覆盖；工具名用 `mcp_<digest>` 不透明命名天然免疫词面拒绝，无需照搬其同词改名清单。
+- tekdt/9fo：429 社区网关，12 种出口；其"代理永不冷却、保持轮换"与本项目尊重 `Retry-After` 的策略相反，不采纳；30 秒请求间隔节流与"每出口并发上限"同类，仍列 P1 候选。
+- 2061969365/zen-direct-v2：uTLS 复刻 Bun TLS 指纹；本项目 Bun transport 只对齐了 HTTP/1.1 头部布局。当前生产请求 200 正常，说明 v2 门未强校验 TLS 指纹，列为观察项。
+- viztor/dsh-opencode-patch：session affinity / gateway origin headers / tool-schema fallback 均已实现。
+
+**UA bump + trace 头（本次落地）**：
+
+- 官方更新器 2026-11-17 实时查询返回 `2.3.0`；本项目 `v2ClientVersion` 自 2026-10-23 起停在 `2.1.1`（落后两个 minor）。历史证据（2026-10-26 门拒绝旧 UA）表明版本陈旧是真实风险。
+- 改动：`internal/httpx/client.go` bump 到 `2.3.0`；`internal/identity` 新增 `TraceHeaders`（trace 由会话派生、span 每请求派生，B3 + W3C 两种形式，零状态）；`setV2Headers` 发送 `b3`/`traceparent`。Bun transport 将非 WebKit 已知头小写化并按字母序输出，`b3` < `traceparent` < `x-opencode-*`，与真实 fetch 布局一致，无需改 transport。
+- VPS 18080 canary 验证（2026-11-17）：候选 `v1.4.8+ua.1`（SHA256 `91CA71F77BD30672851DEEF9F4C5432AE0AF9BA62CE7DAB2DF6D3EC8E37AF162`）与生产 `v1.4.7+keepalive.1` 交错 A/B，beam-free 流式请求 12 轮共 24 次：**双臂全部 200，无 429/403**；canary 侧 12 次上游命中全部 200，SSE 内容正常。旧 UA 当前同样被接受，故本次改动收益为"对齐真实客户端、消除已知风险"而非可观测的拒答率下降；候选无回归（12/12 + 测试 + vet）后提交。
+- 生产二进制未动（仍 `v1.4.7+keepalive.1`）；上游发布 `v1.4.8` 后自动更新覆盖的风险不变，需按第 16 节的方案处理。
