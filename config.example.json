@@ -11,6 +11,10 @@
     "stack": "ipv6",
     "source_ipv6": ""
   },
+  // An https proxy whose certificate is self-signed without an IP SAN (common
+  // on bare-IP residential relays) needs the tls_insecure=1 query flag on its
+  // entry; TLS to the upstream is always verified regardless.
+  // "proxies": ["https://192.0.2.10:443?tls_insecure=1"],
   "proxies": ["direct"],
   "proxyfile": "",
   "upstream": {

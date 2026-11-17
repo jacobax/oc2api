@@ -386,6 +386,12 @@ value, while sending an empty object clears it.
 
 Proxy entries accept `direct`, `http://`, `https://`, `socks5://`, and `socks5h://`, including URL credentials. The inline list is merged with `proxyfile` and deduplicated in order.
 
+An `https://` proxy is dialed over TLS with the proxy's certificate verified against its host. A bare-IP endpoint whose certificate is self-signed without an IP SAN fails that check; appending `?tls_insecure=1` to that entry skips only the proxy-leg verification, while TLS to the upstream keeps full verification:
+
+```text
+https://71.43.26.234:443?tls_insecure=1
+```
+
 A proxy file contains one entry per line and supports blank lines and comments:
 
 ```text

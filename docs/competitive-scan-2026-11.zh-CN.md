@@ -437,3 +437,28 @@ OpenCode v2 的标题请求特征很明确：没有 tools、最多 3 条消息�
 - 自动更新已按用户要求停用：`systemctl disable --now stack-update.timer`（`timer_enabled=disabled`、`timer_active=inactive`、`list-timers` 为 0）；同时把 `.installed_version` 从 `v1.4.7` 改写为 `v1.4.8` 作为双重保险。若将来要恢复自动更新：`systemctl enable --now stack-update.timer`，且必须先把本 fork 的改动并入上游或改更新源，否则会覆盖自定义二进制。
 - 观察项：本次重启出现一次 `graceful shutdown failed`（WebUI `127.0.0.1:8081`，`context deadline exceeded`），自 11-10 以来首次记录；服务仍正常停止与启动，无运行时影响，下次重启时复核是否复现。
 - 生产当前二进制：`v1.4.8+ua.1`，14,319,776 字节，SHA256 `91CA71F77BD30672851DEEF9F4C5432AE0AF9BA62CE7DAB2DF6D3EC8E37AF162`，即第 17 节 canary 验证过的同一构建。
+
+## 18. HTTPS 裸 IP 代理支持（参考 zcode-gateway，2026-11-18）
+
+**需求**：用户要求支持 `https://71.43.26.234:443` 这种非域名的 https 代理（参考 `jacobax/zcode-gateway` 的代理实现）。
+
+**参考仓库结论**（`jacobax/zcode-gateway`）：
+
+- `upstream.go` 的 `normalizeProxyURL` 接受 `http/https/socks5/socks5h` 四种 scheme，无 scheme 时默认 `http://`，底层用 `bogdanfinn/tls-client`（`WithProxyUrl`）。
+- 其 `OPERATIONS.md:509` 明确记录了同类坑：**tls-client 在代理拨号阶段校验证书，自签且无 IP SAN 的 `https://` 住宅代理直接失败；库的 `WithInsecureSkipVerify` 只作用于上游 TLS，救不了代理腿**。zcode-gateway 的解法是本地 relay 前置（`ZCODE_PROXY_URL_CLAIM=http://127.0.0.1:3129`，`contrib/relay`），由 relay 处理代理 TLS。
+
+**本仓库现状核查**：配置层 `ValidateProxyEntry` 原本就接受 `https` scheme；Bun transport（免费流量走它）的 `dialProxy` 与 Go transport 的 `http.ProxyURL` 都实现了"TLS 连代理 + CONNECT"，但都强制校验代理证书。对用户代理实测：证书自签（`CN=YH-WIN64N4-…`，无任何 SAN），curl 严格校验失败、`--proxy-insecure` 成功——即协议层支持、证书校验卡死。
+
+**实现（2026-11-18）**：按代理粒度的 `?tls_insecure=1` 查询参数，只跳过代理腿证书校验：
+
+- `internal/httpx/bun_dial.go`：把非 SOCKS 的代理隧道抽为导出的 `ProxyTunnelDial`（Bun transport 与 gateway regular transport 共用），代理腿 TLS 的 `InsecureSkipVerify` 读自代理 URL 的 `tls_insecure=1`；错误保持 `*net.OpError{Op:"proxyconnect"}` 形状以兼容现有代理失败分类。
+- `internal/gateway/pool.go` `transportPool`：`https` + `tls_insecure=1` 的代理改为网关自行拨代理腿（TLS skip + CONNECT），把已建好的隧道交给 `net/http`（`Proxy=nil`）——因此 regular transport 上游 TLS 依然按系统根完整校验（`http.ProxyURL` 的单一 TLS 配置会同时作用于两跳，不能用 InsecureSkipVerify 实现）。
+- 与 zcode-gateway 方案的差异：无需额外本地 relay 进程；放宽范围精确到单个代理条目；上游 TLS 校验不受影响。
+
+**验证**：
+
+- 单测（`internal/httpx/proxy_tls_test.go`）：自签无 IP SAN 的假 CONNECT 代理——严格模式必须失败且错误可分类为 `proxyconnect`，`tls_insecure=1` 必须成功拿到隧道内容；`ProxyTunnelDial` 直连隧道可承载请求。`go vet` / `go test ./... -count=1` 全部通过。
+- VPS 实测（2026-11-18，canary 18080，WARP 关闭）：
+  - 阴性对照：严格形式 `https://71.43.26.234:443` → 代理 unhealthy、healthz 503、请求 503，日志 `x509: cannot validate certificate for 71.43.26.234 because it doesn't contain any IP SANs`（即改动前行为）。
+  - `?tls_insecure=1`：healthz 200、`proxies healthy=1`、模型目录 `ready/live`（regular transport 经代理刷新成功）、3 次请求 `anon:429@***`（请求成功穿过隧道到达上游，429 为该出口 IP 的免费配额耗尽，与 WARP /64 的 429 同类；日志 0 个证书错误）。
+- 说明：`warp.enabled=true` 时免费模型匿名流量走 WARP、不经过任何代理；要让该代理承接匿名免费流量需 `warp.enabled=false`。生产未改配置（仍 WARP+IPv6）。
