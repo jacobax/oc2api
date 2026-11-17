@@ -320,3 +320,35 @@ func RandomProjectID() string {
 	}
 	return hex.EncodeToString(buf)
 }
+// traceHex renders the first n bytes of sum as the lowercase hex the B3 and
+// W3C trace headers use.
+func traceHex(sum []byte, n int) string {
+	return hex.EncodeToString(sum[:n])
+}
+
+// TraceHeaders derives the trace headers the OpenCode 2.x client sends to its
+// gateway: the same trace in its B3 and W3C forms, one trace per conversation
+// and a fresh span per request. The 2026-11 captures of the release binary
+// (the magpie zen-free plugin sends them header for header) carry both on
+// every v2 request, so a v2 request without them does not look like the
+// client it claims to be.
+//
+// The values are derived instead of stored: the trace comes from the session
+// id, so a conversation keeps one trace across requests and the gateway holds
+// no per-session state, and the span and parent span come from the per-request
+// id, so each request presents a new span under the same trace, as the client's
+// tracer does. A restart re-derives the same values for the same ids, which
+// the tracer's own restarting clients also do within one conversation.
+func TraceHeaders(session, request string) (b3, traceparent string) {
+	if session == "" {
+		session = request
+	}
+	trace := sha256.Sum256([]byte("opencode-trace\x00" + session))
+	span := sha256.Sum256([]byte("opencode-span\x00" + request))
+	parent := sha256.Sum256([]byte("opencode-parent\x00" + request))
+	traceID := traceHex(trace[:], 16)
+	spanID := traceHex(span[:], 8)
+	b3 = traceID + "-" + spanID + "-1-" + traceHex(parent[:], 8)
+	traceparent = "00-" + traceID + "-" + spanID + "-01"
+	return b3, traceparent
+}

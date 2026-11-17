@@ -1444,6 +1444,9 @@ func setV2Headers(header http.Header, protocol wire.Protocol, ids identity.Reque
 	header.Set("x-opencode-session", rootSession)
 	header.Set("x-opencode-session-id", childSession)
 	header.Set("User-Agent", httpx.V2UserAgent())
+	b3, traceparent := identity.TraceHeaders(rootSession, ids.Request)
+	header.Set("b3", b3)
+	header.Set("traceparent", traceparent)
 	header.Set("x-opencode-project", projectID(ids.Project))
 	if protocol == wire.Anthropic {
 		header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
