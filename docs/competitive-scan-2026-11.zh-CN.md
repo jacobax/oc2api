@@ -462,3 +462,18 @@ OpenCode v2 的标题请求特征很明确：没有 tools、最多 3 条消息�
   - 阴性对照：严格形式 `https://71.43.26.234:443` → 代理 unhealthy、healthz 503、请求 503，日志 `x509: cannot validate certificate for 71.43.26.234 because it doesn't contain any IP SANs`（即改动前行为）。
   - `?tls_insecure=1`：healthz 200、`proxies healthy=1`、模型目录 `ready/live`（regular transport 经代理刷新成功）、3 次请求 `anon:429@***`（请求成功穿过隧道到达上游，429 为该出口 IP 的免费配额耗尽，与 WARP /64 的 429 同类；日志 0 个证书错误）。
 - 说明：`warp.enabled=true` 时免费模型匿名流量走 WARP、不经过任何代理；要让该代理承接匿名免费流量需 `warp.enabled=false`。生产未改配置（仍 WARP+IPv6）。
+
+## 19. 面板保存失败修复（2026-11-18）
+
+**症状**：WebUI 面板不能保存，反复出现 `request origin does not match this server` 与 `Cannot read properties of null (reading 'children')`。
+
+**根因一（保存 403）**：CSRF 中间件要求 Origin 的 host 与 scheme 同时匹配服务端所见（`internal/admin/auth.go`）。链路 browser → Cloudflare → cloudflared → nginx(8000) → WebUI(8081) 中，nginx 的 `proxy_set_header X-Forwarded-Proto $scheme` 把 cloudflared 传来的 `https` 覆写为 `http`（cloudflared 到 nginx 是明文 HTTP），网关因此期望 Origin scheme 为 http，而浏览器 Origin 是 `https://`——scheme 永远不匹配。Host 透传（`Host $host`）本来就正确，只有 scheme 被破坏。修复：nginx 三处 location 改为 `proxy_set_header X-Forwarded-Proto https;`（备份在 `/etc/nginx/backups/`）。
+
+**根因二（JS null 崩溃）**：v1.4.8 把代理从配置页 chips 布局移到独立页面，`#proxies-chips` 从 index.html 移除；浏览器缓存里残留的旧版 `config.js` 保存时仍解引用 `$("#proxies-chips").children` → null 崩溃。残留的机制：Cloudflare 把 `.js`/`.css` 响应的浏览器侧 Cache-Control 改写为自身默认的 `max-age=14400`（4 小时），无视网关发出的 `no-cache`，因此每次部署后浏览器最长 4 小时仍在跑旧前端。修复两层：
+
+- `config.js` 对缺失的 chips 容器按空处理（`7d9046d`），消除该崩溃路径。
+- 静态资源 URL 按构建版本改写（`168390e`，`internal/admin/server.go` `indexHTML`）：服务端在输出 index.html 时给 4 个 CSS 与 main.js 追加 `?v=<build>`，HTML 本身不被 CF 边缘缓存（`cf-cache-status: DYNAMIC`）且保持 `no-cache`，版本一变 URL 即变，CF 与浏览器缓存都必须重新拉取——不再依赖 CF 控制台的缓存规则。
+
+**机制验证**（同二进制本地实例 + `POST /api/config/reload` 探针）：Origin https 无 `X-Forwarded-Proto: https` → 403 `origin_failed`（精确复现用户报错）；加该头 → 200 `applied`；Origin http 直连 → 200（不受影响路径）。`go vet` / `go test ./... -count=1` 通过；`node --check config.js` 通过。
+
+**部署（2026-11-18 01:51 CST）**：生产 `v1.4.8+webui.2`（14,336,160 字节，SHA256 `F21B6F57FBF9687D9F2B7D41DB1D8C749B19A232B51E368B431473B3DC477089`），备份 `/opt/opencode2api/opencode2api.bak-20261118-015106`。公网 `/` 已确认输出 `?v=v1.4.8_webui.2` 版本化 URL 与 `no-cache`/`DYNAMIC`；鉴权 200/401、端到端 beam-free 200（WARP /64）、`shutdown_failed` 本次重启 0 次。修正：上次误放入 `sites-enabled/` 的 nginx 备份已移至 `/etc/nginx/backups/`（server_name 冲突警告消除）。用户侧需强刷新一次（Ctrl+Shift+R）清掉浏览器里旧的 index.html 缓存，此后部署自愈。
