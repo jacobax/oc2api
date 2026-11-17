@@ -428,4 +428,12 @@ OpenCode v2 的标题请求特征很明确：没有 tools、最多 3 条消息�
 - 官方更新器 2026-11-17 实时查询返回 `2.3.0`；本项目 `v2ClientVersion` 自 2026-10-23 起停在 `2.1.1`（落后两个 minor）。历史证据（2026-10-26 门拒绝旧 UA）表明版本陈旧是真实风险。
 - 改动：`internal/httpx/client.go` bump 到 `2.3.0`；`internal/identity` 新增 `TraceHeaders`（trace 由会话派生、span 每请求派生，B3 + W3C 两种形式，零状态）；`setV2Headers` 发送 `b3`/`traceparent`。Bun transport 将非 WebKit 已知头小写化并按字母序输出，`b3` < `traceparent` < `x-opencode-*`，与真实 fetch 布局一致，无需改 transport。
 - VPS 18080 canary 验证（2026-11-17）：候选 `v1.4.8+ua.1`（SHA256 `91CA71F77BD30672851DEEF9F4C5432AE0AF9BA62CE7DAB2DF6D3EC8E37AF162`）与生产 `v1.4.7+keepalive.1` 交错 A/B，beam-free 流式请求 12 轮共 24 次：**双臂全部 200，无 429/403**；canary 侧 12 次上游命中全部 200，SSE 内容正常。旧 UA 当前同样被接受，故本次改动收益为"对齐真实客户端、消除已知风险"而非可观测的拒答率下降；候选无回归（12/12 + 测试 + vet）后提交。
-- 生产二进制未动（仍 `v1.4.7+keepalive.1`）；上游发布 `v1.4.8` 后自动更新覆盖的风险不变，需按第 16 节的方案处理。
+- 提交后上游 tag `v1.4.8` 已存在，`.installed_version=v1.4.7` 使每日 05:17 的自动更新面临覆盖风险，按用户确认处理（见下）。
+
+**生产部署与自动更新停用（2026-11-18 00:36 CST，用户确认后执行）**：
+
+- 备份原二进制为 `/opt/opencode2api/opencode2api.bak-20261118-003542`（14,110,880 字节，`v1.4.7+keepalive.1`），候选经远端 SHA256 校验后原子替换并重启；健康检查 200，版本 `v1.4.8+ua.1`。
+- 复核：`status=ok`、`models.status=ready`、`cache_source=live`（重启后短暂的 `degraded`/`model_catalog_stale` 属磁盘缓存，live 刷新后恢复）；WARP `ready active=2`；带 `server_keys` `/v1/models` 200、无 Key 401；端到端 beam-free 流式请求 200（`anon:200:663ms@warp:2a09:bac1:3b20::/64`）；公网 `https://oc.fxk.us.ci/healthz` 200。
+- 自动更新已按用户要求停用：`systemctl disable --now stack-update.timer`（`timer_enabled=disabled`、`timer_active=inactive`、`list-timers` 为 0）；同时把 `.installed_version` 从 `v1.4.7` 改写为 `v1.4.8` 作为双重保险。若将来要恢复自动更新：`systemctl enable --now stack-update.timer`，且必须先把本 fork 的改动并入上游或改更新源，否则会覆盖自定义二进制。
+- 观察项：本次重启出现一次 `graceful shutdown failed`（WebUI `127.0.0.1:8081`，`context deadline exceeded`），自 11-10 以来首次记录；服务仍正常停止与启动，无运行时影响，下次重启时复核是否复现。
+- 生产当前二进制：`v1.4.8+ua.1`，14,319,776 字节，SHA256 `91CA71F77BD30672851DEEF9F4C5432AE0AF9BA62CE7DAB2DF6D3EC8E37AF162`，即第 17 节 canary 验证过的同一构建。
