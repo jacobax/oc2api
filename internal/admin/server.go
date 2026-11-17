@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,10 @@ type Server struct {
 	goAuth        map[string]*goAuthAttempt
 	goAuthClient  *goauth.Client
 	proxyChecks   chan struct{}
+	// indexMu guards the versioned index.html cache; see indexHTML.
+	indexMu   sync.Mutex
+	indexBody []byte
+	indexErr  error
 }
 
 // New returns a Server for manager, reporting to monitor and logs.
@@ -96,6 +101,51 @@ func (a *Server) Handler() http.Handler {
 	return a.securityHeaders(telemetry.Recover(a.logger, mux))
 }
 
+// assetURLVersion renders buildinfo.Version as a cache-busting query value.
+// Release versions carry a +, which is legal in a query but easy to mangle in
+// logs and shell commands; a dot keeps the URL readable.
+func assetURLVersion() string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, buildinfo.Version)
+}
+
+var (
+	stylesheetURLPattern = regexp.MustCompile(`href="(/css/[^"]+)"`)
+	scriptURLPattern     = regexp.MustCompile(`src="(/js/[^"]+)"`)
+)
+
+// indexHTML returns the embedded index with every local asset reference
+// versioned by the running build (?v=...). The CSS and module URLs then change
+// with every release, so neither Cloudflare — which rewrites the
+// browser-facing Cache-Control of .js and .css responses to its own 4-hour
+// browser TTL regardless of the origin's no-cache — nor a heuristic browser
+// cache can keep serving the previous build's frontend against the new
+// backend. index.html itself is not edge-cached and keeps no-cache, so every
+// load sees the current build's URLs. The result is cached for the life of the
+// process: the binary embeds one immutable frontend.
+func (a *Server) indexHTML() ([]byte, error) {
+	a.indexMu.Lock()
+	defer a.indexMu.Unlock()
+	if a.indexBody != nil {
+		return a.indexBody, nil
+	}
+	source, err := fs.ReadFile(webui.Assets, "index.html")
+	if err != nil {
+		return nil, err
+	}
+	version := assetURLVersion()
+	versioned := stylesheetURLPattern.ReplaceAll(source, []byte(`href="$1?v=`+version+`"`))
+	versioned = scriptURLPattern.ReplaceAll(versioned, []byte(`src="$1?v=`+version+`"`))
+	a.indexBody = versioned
+	return a.indexBody, nil
+}
+
 // staticHandler serves the embedded WebUI assets, with the index fallback
 // described on Handler.
 func (a *Server) staticHandler() http.Handler {
@@ -105,6 +155,16 @@ func (a *Server) staticHandler() http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			writeAdminError(w, http.StatusNotFound, "not_found", "management endpoint not found")
 			return
+		}
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			body, err := a.indexHTML()
+			if err == nil {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Write(body)
+				return
+			}
+			a.logger.Error("cannot version the WebUI index", "error", err)
 		}
 		if r.URL.Path != "/" && r.URL.Path != "/index.html" {
 			if _, err := fs.Stat(assets, strings.TrimPrefix(r.URL.Path, "/")); err != nil {
