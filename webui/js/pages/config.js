@@ -14,6 +14,7 @@ let mutation = null;
 
 function renderChips(name) {
   const host = $(`#${name}-chips`);
+  if (!host) return;
   host.replaceChildren();
   const items = store.get("config")?.[name] || [];
   const expanded = expandedChips.has(name);
@@ -63,9 +64,15 @@ function renderRestartNotice(value) {
 
 function secretInputs(name) {
   if (name === "proxies") return proxyInputs();
-  const kept = [...$(`#${name}-chips`).children]
-    .filter((node) => node.dataset.id !== undefined)
-    .map((node) => ({ id: node.dataset.id }));
+  const host = $(`#${name}-chips`);
+  // A browser that cached the previous build's script against the new markup
+  // can name a section the current page no longer renders; treat its missing
+  // chips as empty rather than failing the whole save.
+  const kept = host
+    ? [...host.children]
+        .filter((node) => node.dataset.id !== undefined)
+        .map((node) => ({ id: node.dataset.id }))
+    : [];
   const added = $(`#${name}-new`)
     .value.split(/\r?\n/)
     .map((value) => value.trim())
