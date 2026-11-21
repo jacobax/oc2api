@@ -6,9 +6,8 @@ package httpx
 // when it starts rejecting older ones. The 2026-10-26 gate answered an older
 // User-Agent with 429 FreeUsageLimitError, so a version stale by two minor
 // releases is worth refreshing even before a rejection: the official updater
-// (opencode.ai/update/api/latest/cli/npm) reported 2.3.0 on 2026-11-17, and
-// the magpie zen-free plugin pins 2.2.5 captured from the release binary.
-const v2ClientVersion = "2.3.0"
+// (opencode.ai/update/api/latest/cli/npm) reported 2.3.2 on 2026-11-21.
+const v2ClientVersion = "2.3.2"
 
 // v1ClientVersion is the OpenCode 1.x release the gateway claims to be on the
 // v1 lane (/zen), and v1BunVersion is the Bun runtime that release ships with.
