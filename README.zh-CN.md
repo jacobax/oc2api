@@ -203,7 +203,7 @@ OAuth 另有规则：请求选择 OAuth 路由后，只使用该 Tier 已确认�
 | `performance.idle_conn_timeout_seconds` | `120` | 空闲连接寿命。 |
 | `performance.stream_keepalive_seconds` | `15` | SSE 空闲时按该周期发送注释帧保活；零禁用。 |
 
-`proxies` 支持 `direct`、HTTP、HTTPS、SOCKS5、SOCKS5H URL。`proxyfile` 从配置目录相对路径读取，每个非空行一个代理，合并后去重；最终为空时使用直连。行首或空白后的 `#`、`;`、`//` 表示注释。代理 URL 中的账号密码属于敏感信息。
+`proxies` 支持 `direct`、HTTP、HTTPS、SOCKS5、SOCKS5H URL。`proxyfile` 从配置目录相对路径读取，每个非空行一个代理，合并后去重；最终为空时使用直连。行首或空白后的 `#`、`;`、`//` 表示注释。代理 URL 中的账号密码属于敏感信息。证书自签且不含 IP SAN 的裸 IP `https://` 代理（常见于住宅中继）无法通过代理腿校验；在该条目末尾追加 `?tls_insecure=1` 只跳过代理这一跳，到上游的 TLS 仍然完整校验：`https://71.43.26.234:443?tls_insecure=1`。
 
 供应商负责轮换出口时，可写成 `pool+https://proxy.example:8443` 或 `https://proxy.example:8443#pool`。每次尝试新建连接，不复用 keep-alive/HTTP/2，也不采用静态节点的冷却和健康淘汰。实际出口轮换由供应商提供。静态代理保留连接复用、健康跟踪与 Key 绑定；`proxy_bindings` 可按 Key 指纹绑定已配置代理。
 
