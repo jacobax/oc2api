@@ -477,3 +477,23 @@ OpenCode v2 的标题请求特征很明确：没有 tools、最多 3 条消息�
 **机制验证**（同二进制本地实例 + `POST /api/config/reload` 探针）：Origin https 无 `X-Forwarded-Proto: https` → 403 `origin_failed`（精确复现用户报错）；加该头 → 200 `applied`；Origin http 直连 → 200（不受影响路径）。`go vet` / `go test ./... -count=1` 通过；`node --check config.js` 通过。
 
 **部署（2026-11-18 01:51 CST）**：生产 `v1.4.8+webui.2`（14,336,160 字节，SHA256 `F21B6F57FBF9687D9F2B7D41DB1D8C749B19A232B51E368B431473B3DC477089`），备份 `/opt/opencode2api/opencode2api.bak-20261118-015106`。公网 `/` 已确认输出 `?v=v1.4.8_webui.2` 版本化 URL 与 `no-cache`/`DYNAMIC`；鉴权 200/401、端到端 beam-free 200（WARP /64）、`shutdown_failed` 本次重启 0 次。修正：上次误放入 `sites-enabled/` 的 nginx 备份已移至 `/etc/nginx/backups/`（server_name 冲突警告消除）。用户侧需强刷新一次（Ctrl+Shift+R）清掉浏览器里旧的 index.html 缓存，此后部署自愈。
+
+## 20. 第三轮：上游 v1.5.0/v1.5.1 同步与同类扫描（2026-11-21）
+
+**上游同步**：合并 3 个提交（tag `v1.5.0`/`v1.5.1`），冲突 3 处（README×2、config.js）：
+
+- `e2b2a7c` 大重构：admin OAuth 整合（`go_auth.go`→`oauth.go`）、认证/密钥脱敏/流/传输/配置加固、四语言 README 重写、`docs/management.*.md` 四语言新增。合并后复核：`server.go` 的 indexHTML 版本化、`auth.go` 的 origin 校验均完好。
+- `8f691a0` #190 客户端提示词环境隔离：新增 `client_environment.go`（405 行），环境声明在协议转换前按请求解析、去宿主目录/平台假设。
+- `6575c62` #188 **新的免费层门发现**：免费层会按客户端工具顶层描述的字面措辞做匹配（指纹类拒绝）；整形时把描述中的 ASCII 空格替换为 NBSP（U+00A0）破坏匹配且幂等。参数 schema 与追加的官方工具不动。
+
+冲突解决：`config.js` 取上游侧——上游把 kept-id 从 chips DOM 读取改为 `store.get("config")` + `removedChips` 跟踪，chips 变成纯视图，**结构性取代**了我们 7d9046d 的 stale-cache 防护；README 取上游重写版后补回两处独有内容（`stream_keepalive_seconds` 行、`tls_insecure=1` 段落，后者见 `50b0aa4`）。验证：`go vet` / `go test ./... -count=1` / `node --check` 全部通过。
+
+**同类扫描**：
+
+- **zen-direct-v2 v1.1.3/v1.1.4**（11-21）：v1.1.3 显式对齐 opencode2api v1.5.1（NBSP + 环境隔离，我们已随合并获得）。**v1.1.4 的发现值得吸收**：免费层 SSE 每帧把可选字段填成 `null` 而非省略（`delta.role/content/reasoning_content/tool_calls`、`finish_reason`、`logprobs` 全 null），按 OpenAI 流式规范写的解析器会把 null 当类型错误崩溃。核对本仓库：`rewriteChatFrame` 的 `map[string]any` 重序列化保留 null、renames 为空时 passthrough 原样透传——**同一崩溃类存在**。候选实现：免费模型流式帧剥离 null 值键（含 passthrough 路径），配单测；待用户确认后按"验证收益为正"流程实施。
+- **dwisnulabs_opencode_proxy**（新，11-19/21，WARP 向）：cold-start false-burn/双计数、Retry-After burn-list、warm standby。其 burn 持久化设计的双计数 bug 与本仓库内存 `cooling` 映射 + `markPenalized` 单次守卫的实现不冲突（reviewed，N/A）；Retry-After 参与冷却我们已支持。
+- **dsh-opencode-patch 1.10.0**：Go 配额从 models 端点读取（小改进，观察项）。
+- **magpie zen-free 0.1.28**：DSH `edit`/`read`/`skill` 同词改名——本仓库 opaque digest 命名天然免疫词面拒绝，无需吸收。
+- **tekdt/9fo**：仅宿主状态更新。**afree-proxy**：多账号池+额度加权调度（不同架构，参考有限）。
+
+**维护项**：OpenCode 官方更新器版本 `2.3.0`→`2.3.2`（11-21 查询）；无紧迫证据，下次发布构建顺手 bump `v2ClientVersion`。
