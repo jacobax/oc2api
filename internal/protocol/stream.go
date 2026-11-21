@@ -248,6 +248,149 @@ func RenameStreamReader(reader io.Reader, protocol Protocol, renames *ToolRename
 	}
 }
 
+// NullStripStreamReader removes keys whose value is null from each Chat data
+// frame. The free tier fills optional fields with null instead of omitting
+// them — every frame carries delta.role/content/reasoning_content and
+// tool_calls as null — while the OpenAI streaming convention only carries a
+// key when it has content, so a strict downstream parser answers such a frame
+// with a type error. Absent and null mean the same thing on the wire, which
+// the upstream itself demonstrates by omitting these keys on other lanes;
+// deleting them makes the frames conform without changing what they say.
+// Lines that are not JSON data frames, numbers (kept as json.Number), and
+// null array elements pass through unchanged. It applies to the Chat lane
+// only: Anthropic and Responses frames are structured events, and the
+// cross-protocol transcoders rebuild every object from parsed values, so
+// their nulls never reach a client.
+func NullStripStreamReader(reader io.Reader, protocol Protocol) io.Reader {
+	if protocol != Chat {
+		return reader
+	}
+	return &nullStripReader{
+		buffer: bufio.NewReaderSize(reader, 64<<10),
+	}
+}
+
+// nullStripReader is the io.Reader NullStripStreamReader returns: it reads the
+// stream line by line, deletes the null-valued keys of data frames, and
+// serves the stripped bytes, carrying an error over to the next Read.
+type nullStripReader struct {
+	buffer  *bufio.Reader
+	pending []byte
+	err     error
+}
+
+func (reader *nullStripReader) Read(data []byte) (int, error) {
+	for len(reader.pending) == 0 {
+		if reader.err != nil {
+			return 0, reader.err
+		}
+		var lineBytes []byte
+		var err error
+		for {
+			var part []byte
+			part, err = reader.buffer.ReadSlice('\n')
+			if len(lineBytes)+len(part) > maxSSEFrameBytes {
+				reader.err = errSSEFrameTooLarge
+				return 0, reader.err
+			}
+			lineBytes = append(lineBytes, part...)
+			if !errors.Is(err, bufio.ErrBufferFull) {
+				break
+			}
+		}
+		line := string(lineBytes)
+		if len(line) > 0 {
+			reader.pending = reader.stripLine(line)
+		}
+		if err != nil {
+			// The final chunk is drained before the error is reported so a
+			// truncated stream still delivers every byte the upstream sent.
+			reader.err = err
+			if len(reader.pending) == 0 {
+				return 0, err
+			}
+		}
+	}
+	n := copy(data, reader.pending)
+	reader.pending = reader.pending[n:]
+	return n, nil
+}
+
+// stripLine transforms one complete SSE line, preserving its original bytes
+// and terminator whenever nothing needs to be stripped.
+func (reader *nullStripReader) stripLine(line string) []byte {
+	body, terminator := line, ""
+	if trimmed := strings.TrimSuffix(line, "\n"); trimmed != line {
+		terminator = "\n"
+		body = trimmed
+		if trimmed = strings.TrimSuffix(body, "\r"); trimmed != body {
+			terminator = "\r\n"
+			body = trimmed
+		}
+	}
+	if !strings.HasPrefix(body, "data:") {
+		return []byte(line)
+	}
+	raw := strings.TrimSpace(strings.TrimPrefix(body, "data:"))
+	if raw == "" || raw == "[DONE]" {
+		return []byte(line)
+	}
+	stripped := StripNullValues([]byte(raw))
+	if stripped == nil {
+		return []byte(line)
+	}
+	return []byte("data: " + string(stripped) + terminator)
+}
+
+// StripNullValues deletes every object key whose value is null, recursively,
+// and re-encodes the JSON. Numbers round-trip exactly through json.Number.
+// It returns nil when the input holds no null at all, so a clean frame keeps
+// its original bytes instead of a re-encoding.
+func StripNullValues(raw []byte) []byte {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var payload any
+	if err := decoder.Decode(&payload); err != nil {
+		return nil
+	}
+	if !stripNullMap(payload) {
+		return nil
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
+// stripNullMap deletes null-valued keys of an object and recurses into the
+// remaining values. It reports whether any key was deleted; null array
+// elements stay, because dropping them would shift the indices the protocol
+// keys tool calls by.
+func stripNullMap(node any) bool {
+	deleted := false
+	switch value := node.(type) {
+	case map[string]any:
+		for key, item := range value {
+			if item == nil {
+				delete(value, key)
+				deleted = true
+				continue
+			}
+			if stripNullMap(item) {
+				deleted = true
+			}
+		}
+	case []any:
+		for _, item := range value {
+			if stripNullMap(item) {
+				deleted = true
+			}
+		}
+	}
+	return deleted
+}
+
 // renameStreamReader is the io.Reader RenameStreamReader returns: it reads the
 // upstream stream line by line, rewrites the data lines that need it, and
 // serves the rewritten bytes, carrying an error over to the next Read.

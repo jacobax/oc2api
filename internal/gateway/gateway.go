@@ -472,6 +472,14 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("X-Accel-Buffering", "no")
 			streamBody := wire.RenameStreamReader(resp.Body, upstreamRoute.Protocol, toolRenames)
+			// The free tier fills every optional frame field with null instead
+			// of omitting it; strict OpenAI-streaming parsers crash on that.
+			// Same-protocol forwarding passes the frames on, so strip the
+			// nulls first (the cross-protocol transcoders rebuild every
+			// object and drop them anyway).
+			if g.catalog.IsFreeModel(model) {
+				streamBody = wire.NullStripStreamReader(streamBody, upstreamRoute.Protocol)
+			}
 			streamBody = wire.NewKeepAliveReader(r.Context(), streamBody, time.Duration(g.cfg.Performance.StreamKeepaliveSeconds)*time.Second)
 			var usage wire.Usage
 			var usageReported bool
