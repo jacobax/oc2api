@@ -497,3 +497,11 @@ OpenCode v2 的标题请求特征很明确：没有 tools、最多 3 条消息�
 - **tekdt/9fo**：仅宿主状态更新。**afree-proxy**：多账号池+额度加权调度（不同架构，参考有限）。
 
 **维护项**：OpenCode 官方更新器版本 `2.3.0`→`2.3.2`（11-21 查询）；无紧迫证据，下次发布构建顺手 bump `v2ClientVersion`。
+
+**null-strip 落地与部署（2026-11-22，用户确认后执行）**：
+
+- 实现：`internal/protocol/stream.go` 新增 `NullStripStreamReader`/`StripNullValues`（递归删除对象中 null 值键；`json.Number` 保数字精确；null 数组元素保留以免位移 tool-call 索引；无 null 的帧保持原字节；非 JSON/注释/`[DONE]` 原样透传）；`gateway.go` 在免费模型 + 同协议 Chat 转发路径接入（跨协议 TranscodeStream 重建对象本就不透传 null）。UA 顺带 bump 至 `2.3.2`。
+- 单测 5 项：占位剥离、无 null 帧逐字节透传、注释/非 JSON 透传、null 数组元素与大数精度、非 Chat 协议不动。调试中发现并修正两处测试自身错误（SSE 空行计入行数、夹具缺收尾 `}` 导致 `unexpected EOF`——reader 对畸形 JSON 正确透传，实现无错）。
+- 提交：`a9e1881` 实现、`7e46f70` 测试、`39918ad` UA bump。
+- 部署：生产 `v1.5.1+nullstrip.1`（14,512,288 字节，SHA256 `508491D75C4AADD57E7AF6050571F16FC004D8604DFDDCFCF8F5FC9B5B2C28CE`），备份 `/opt/opencode2api/opencode2api.bak-20261122-014148`。**真实流验证**：beam-free 与 big-pickle 各一次流式请求，输出帧 `:null` 计数 **0**（旧版每帧至少含 `finish_reason:null`）；鉴权 200/401、公网 200、WARP 正常（anon:200@warp）、`shutdown_failed` 0 次。
+- 推送经 VPS bundle 中转（本机到 GitHub 的 DNS 污染持续，直连路由方案失效）：`969362e..39918ad`，VPS 临时凭据已清理。
