@@ -171,7 +171,8 @@ func ProxyTunnelDial(ctx context.Context, dialer *net.Dialer, proxy *url.URL, ta
 	if err != nil {
 		return wrap(err)
 	}
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	rawConn := conn
+	stop := context.AfterFunc(ctx, func() { rawConn.Close() })
 	_ = conn.SetDeadline(time.Now().Add(bunHandshakeTimeout))
 	if proxy.Scheme == "https" {
 		tlsConn := tls.Client(conn, &tls.Config{
@@ -304,7 +305,7 @@ func socks5Connect(conn net.Conn, user *url.Userinfo, addr string) error {
 		if _, err := io.ReadFull(conn, reply); err != nil {
 			return err
 		}
-		if reply[1] != 0 {
+		if reply[0] != 1 || reply[1] != 0 {
 			return errors.New("username/password authentication failed")
 		}
 	default:
@@ -328,7 +329,7 @@ func socks5Connect(conn net.Conn, user *url.Userinfo, addr string) error {
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return err
 	}
-	if header[0] != 5 {
+	if header[0] != 5 || header[2] != 0 {
 		return fmt.Errorf("unexpected protocol version %d", header[0])
 	}
 	if header[1] != 0 {
